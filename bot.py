@@ -1,68 +1,50 @@
 import os
 import re
 import requests
-from telegram import Bot, Update
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
-from config import TELEGRAM_TOKEN, TARGET_CHAT_ID
+from telegram import Update, Bot
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-# 初始化bot
-bot = Bot(token=TELEGRAM_TOKEN)
+# 从环境变量获取配置
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+TARGET_CHAT_ID = os.getenv("TARGET_CHAT_ID")
 
-def extract_app_id(url):
-    """从App Store链接中提取ID"""
-    match = re.search(r'id(\d+)', url)
-    return match.group(1) if match else None
-
-def get_app_price(app_id):
-    """获取App价格信息"""
-    url = f"https://itunes.apple.com/lookup?id={app_id}&country=cn"
-    response = requests.get(url)
-    data = response.json()
-    if data['resultCount'] > 0:
-        app = data['results'][0]
-        return {
-            'name': app.get('trackName'),
-            'price': app.get('price', 0),
-            'currency': app.get('currency'),
-            'url': app.get('trackViewUrl')
-        }
-    return None
-
-def handle_message(update: Update, context: CallbackContext):
-    """处理用户消息"""
-    if update.message.text.startswith('/p'):
-        url = update.message.text[3:].strip()
-        app_id = extract_app_id(url)
+async def extract_and_forward(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    url = update.message.text.replace("/p", "").strip()
+    
+    # 提取Apple Store ID
+    app_id = re.search(r'/id(\d+)', url)
+    if not app_id:
+        await update.message.reply_text("⚠️ 无效的App Store链接")
+        return
+    
+    app_id = app_id.group(1)
+    
+    # 获取价格信息
+    try:
+        price = get_app_price(app_id)
+        message = f"🛒 App ID: {app_id}\n💰 价格: {price}\n🔗 链接: {url}"
         
-        if app_id:
-            price_info = get_app_price(app_id)
-            if price_info:
-                response = (
-                    f"📱 App名称: {price_info['name']}\n"
-                    f"💰 价格: {price_info['price']} {price_info['currency']}\n"
-                    f"🔗 链接: {price_info['url']}"
-                )
-                # 回复用户
-                update.message.reply_text(response)
-                # 转发到目标群组
-                bot.send_message(
-                    chat_id=TARGET_CHAT_ID,
-                    text=f"新价格查询:\n{response}\n\n来自用户: @{update.message.from_user.username}"
-                )
-            else:
-                update.message.reply_text("⚠️ 无法获取应用价格信息")
-        else:
-            update.message.reply_text("❌ 无效的App Store链接")
+        # 转发到目标群组
+        bot = Bot(token=BOT_TOKEN)
+        await bot.send_message(chat_id=TARGET_CHAT_ID, text=message)
+        await update.message.reply_text("✅ 已获取并转发价格信息")
+    except Exception as e:
+        await update.message.reply_text(f"❌ 获取价格失败: {str(e)}")
+
+def get_app_price(app_id: str) -> str:
+    """通过Apple Store API获取价格"""
+    api_url = f"https://itunes.apple.com/lookup?id={app_id}"
+    response = requests.get(api_url).json()
+    
+    if not response.get("results"):
+        raise ValueError("未找到应用信息")
+    
+    return response["results"][0].get("formattedPrice", "免费")
 
 def main():
-    """启动机器人"""
-    updater = Updater(TELEGRAM_TOKEN)
-    dispatcher = updater.dispatcher
-    
-    dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
-    
-    updater.start_polling()
-    updater.idle()
+    app = Application.builder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("p", extract_and_forward))
+    app.run_polling()
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
